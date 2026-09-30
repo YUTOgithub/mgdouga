@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow,noarchive,noai,noimageai">
+<title>HTML → MP4 変換</title>
+<style>
+:root{--navy:#0f1b3d;--navy2:#1a2b5c;--amber:#ffb020;--red:#e5484d;--ink:#eef1f8;--mute:#9aa6c4}
+*{box-sizing:border-box}
+body{margin:0;background:var(--navy);color:var(--ink);font-family:system-ui,"Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.6}
+main{max-width:920px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:1.4rem;margin:0 0 4px}h1 span{color:var(--amber)}
+.sub{color:var(--mute);margin:0 0 20px;font-size:.9rem}
+.grid{display:grid;gap:20px;grid-template-columns:1fr}
+@media(min-width:760px){.grid{grid-template-columns:1fr 320px}}
+.card{background:var(--navy2);border-radius:12px;padding:16px}
+#drop{border:2px dashed var(--mute);border-radius:12px;padding:28px 12px;text-align:center;cursor:pointer;display:block}
+#drop:hover,#drop.over,#drop:focus-within{border-color:var(--amber)}
+#drop input{position:absolute;opacity:0;width:1px;height:1px}
+fieldset{border:0;padding:0;margin:16px 0 0}legend{font-weight:600;margin-bottom:6px}
+.opts{display:flex;gap:8px;flex-wrap:wrap}
+.opts label{background:var(--navy);border:1px solid var(--mute);border-radius:8px;padding:6px 12px;cursor:pointer}
+.opts input{margin-right:6px;accent-color:var(--amber)}
+.opts label:has(input:checked){border-color:var(--amber)}
+.opts label:has(input:focus-visible){outline:2px solid var(--amber)}
+input[type=number]{width:90px;padding:6px;border-radius:6px;border:1px solid var(--mute);background:var(--navy);color:var(--ink)}
+button{margin-top:18px;width:100%;padding:12px;font-size:1rem;font-weight:700;border:0;border-radius:10px;background:var(--amber);color:#1a1300;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}button:focus-visible{outline:3px solid #fff}
+#stage{background:#000;border-radius:8px;margin:0 auto;overflow:hidden;position:relative;max-width:100%}
+#stage iframe{border:0;transform-origin:0 0;position:absolute;left:0;top:0;background:#fff}
+.bar{height:10px;background:var(--navy);border-radius:5px;overflow:hidden;margin-top:14px}
+.bar i{display:block;height:100%;width:0;background:var(--amber);transition:width .3s}
+#status{margin-top:8px;font-size:.9rem;min-height:1.4em}
+.err{color:var(--red)}.note{color:var(--mute);font-size:.8rem;margin-top:14px}
+a.dl{color:var(--amber)}
+</style>
+</head>
+<body>
+<main>
+<h1>HTML → <span>MP4</span> 変換</h1>
+<p class="sub">モーショングラフィックス HTML をアップロードして、MP4 動画にします。</p>
+<div class="grid">
+  <section class="card" aria-label="設定">
+    <label id="drop">
+      <input type="file" id="file" accept=".html,.htm,text/html">
+      <strong id="fname">ここに HTML をドロップ、またはクリックして選択</strong>
+      <div class="sub" id="fmeta" style="margin:6px 0 0"></div>
+    </label>
+    <fieldset><legend>出力サイズ</legend>
+      <div class="opts" id="sizes"></div></fieldset>
+    <fieldset><legend>動画の長さ（秒）</legend>
+      <input type="number" id="dur" min="0" value="0" inputmode="numeric" aria-describedby="durhelp">
+      <span class="sub" id="durhelp">0 = 自動検出（動きが止まったら終了）</span></fieldset>
+    <button id="go" disabled>変換開始</button>
+    <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="pbar"><i></i></div>
+    <div id="status" role="status" aria-live="polite"></div>
+    <p class="note">処理中はブラウザを閉じないでください。アップロードした HTML は処理後にサーバーから削除されます。</p>
+  </section>
+  <section class="card" aria-label="プレビュー">
+    <div id="stage"></div>
+    <p class="sub" style="text-align:center;margin:8px 0 0" id="pvnote">プレビュー（アップロード後に表示）</p>
+  </section>
+</div>
+</main>
+<script>
+const SZ={'9x16':[1080,1920],'1x1':[1080,1080],'16x9':[1920,1080]};
+const $=id=>document.getElementById(id);
+let file=null,cfg=null,timer=null;
+
+fetch('/api/config').then(r=>r.json()).then(c=>{
+  cfg=c;
+  $('sizes').innerHTML=Object.entries(c.sizes).map(([k,l],i)=>
+    `<label><input type="radio" name="size" value="${k}" ${i===0?'checked':''}>${l}</label>`).join('');
+  document.querySelectorAll('[name=size]').forEach(r=>r.onchange=preview);
+  $('dur').max=c.maxDurationSec;
+});
+const size=()=>document.querySelector('[name=size]:checked')?.value||'9x16';
+
+function preview(){
+  const st=$('stage');st.innerHTML='';if(!file)return;
+  const [w,h]=SZ[size()];const maxW=Math.min(st.parentElement.clientWidth-32,300);
+  const s=Math.min(maxW/w,420/h);
+  st.style.width=w*s+'px';st.style.height=h*s+'px';
+  const f=document.createElement('iframe');
+  f.setAttribute('sandbox','allow-scripts');   // 親ページへは一切触れない
+  f.title='プレビュー';f.width=w;f.height=h;f.style.transform=`scale(${s})`;
+  const r=new FileReader();r.onload=()=>{f.srcdoc=r.result;};r.readAsText(file);
+  st.appendChild(f);$('pvnote').textContent='プレビュー';
+}
+function pick(f){
+  if(!f)return;
+  if(!/\.html?$/i.test(f.name)){return msg('HTML ファイルを選択してください',1);}
+  if(cfg&&f.size>cfg.maxUploadMB*1048576){return msg(`ファイルが大きすぎます（上限 ${cfg.maxUploadMB}MB）`,1);}
+  file=f;$('fname').textContent=f.name;$('fmeta').textContent=(f.size/1024).toFixed(0)+' KB';
+  $('go').disabled=false;msg('');preview();
+}
+function msg(t,err){$('status').textContent=t;$('status').className=err?'err':'';}
+function bar(p){$('pbar').firstElementChild.style.width=p+'%';$('pbar').setAttribute('aria-valuenow',p);}
+
+$('file').onchange=e=>pick(e.target.files[0]);
+const d=$('drop');
+['dragover','dragenter'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add('over')}));
+['dragleave','drop'].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove('over')}));
+d.addEventListener('drop',e=>pick(e.dataTransfer.files[0]));
+
+$('go').onclick=async()=>{
+  $('go').disabled=true;bar(0);msg('アップロード中…');
+  const fd=new FormData();fd.append('size',size());fd.append('duration',$('dur').value||'0');fd.append('html',file);
+  try{
+    const r=await fetch('/api/jobs',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.error||'エラーが発生しました');
+    poll(j.id,Date.now());
+  }catch(e){msg(e.message,1);$('go').disabled=false;}
+};
+function poll(id,t0){
+  clearInterval(timer);
+  timer=setInterval(async()=>{
+    try{
+      const r=await fetch('/api/jobs/'+id);const j=await r.json();
+      if(!r.ok)throw new Error(j.error);
+      bar(j.progress);
+      if(j.status==='queued')msg(`順番待ち（${j.queuePosition} 番目）`);
+      else if(j.status==='error'){clearInterval(timer);msg('失敗: '+j.error,1);$('go').disabled=false;}
+      else if(j.status==='done'){
+        clearInterval(timer);msg('');
+        $('status').innerHTML='完了！ダウンロードします… <a class="dl" href="/api/jobs/'+id+'/download">届かない場合はこちら</a>';
+        location.href='/api/jobs/'+id+'/download';$('go').disabled=false;
+      }else{
+        const el=(Date.now()-t0)/1000,rem=j.progress>5?Math.max(0,el*(100-j.progress)/j.progress):null;
+        msg(j.message+(rem!==null?`（残り約 ${Math.ceil(rem)} 秒）`:''));
+      }
+    }catch(e){clearInterval(timer);msg(e.message,1);$('go').disabled=false;}
+  },1000);
+}
+</script>
+</body>
+</html>
